@@ -1,0 +1,511 @@
+name: 🎬 دریافت ویدیوهای یوتیوبر
+
+on:
+  workflow_dispatch:
+    inputs:
+      channel_name:
+        description: 'نام یوتیوبر (مثال: MrBeast, elx, Zomro)'
+        required: true
+        type: string
+        default: ''
+      max_videos:
+        description: 'تعداد ویدیو (حداکثر ۵۰)'
+        required: false
+        default: '10'
+        type: choice
+        options:
+          - '5'
+          - '10'
+          - '20'
+          - '50'
+
+jobs:
+  get-channel-videos:
+    name: "🔍 جستجو و دریافت ویدیوها"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq curl
+          pip install yt-dlp
+          
+      - name: Get Channel Videos
+        run: |
+          CHANNEL_NAME="${{ github.event.inputs.channel_name }}"
+          MAX_COUNT="${{ github.event.inputs.max_videos }}"
+          
+          echo "=========================================="
+          echo "🎬 جستجوی کانال: $CHANNEL_NAME"
+          echo "📊 تعداد ویدیو مورد نیاز: $MAX_COUNT"
+          echo "=========================================="
+          echo ""
+          
+          # First, search for channel
+          echo "🔍 در حال جستجوی کانال..."
+          
+          # Try to get channel URL using yt-dlp search
+          SEARCH_URL="ytsearch5:${CHANNEL_NAME} channel"
+          
+          # Get channel info
+          yt-dlp --dump-json --skip-download "https://www.youtube.com/@${CHANNEL_NAME}" > channel-info.json 2>/dev/null || \
+          yt-dlp --dump-json --skip-download "ytsearch:${CHANNEL_NAME} channel" > channel-info.json 2>/dev/null || \
+          echo "{}" > channel-info.json
+          
+          # Alternative method: search for channel and extract videos
+          echo ""
+          echo "📥 در حال دریافت ویدیوهای کانال..."
+          
+          # Get videos from channel using yt-dlp
+          # Try different channel URL formats
+          CHANNEL_URL=""
+          
+          # Try @username format
+          if yt-dlp --flat-playlist --dump-json --skip-download "https://www.youtube.com/@${CHANNEL_NAME}" 2>/dev/null | head -1 | grep -q "title"; then
+            CHANNEL_URL="https://www.youtube.com/@${CHANNEL_NAME}"
+            echo "✅ کانال پیدا شد: @${CHANNEL_NAME}"
+          else
+            # Try searching
+            SEARCH_RESULT=$(yt-dlp --flat-playlist --dump-json --skip-download "ytsearch10:${CHANNEL_NAME} youtube channel" 2>/dev/null | head -1)
+            if [ -n "$SEARCH_RESULT" ]; then
+              CHANNEL_URL=$(echo "$SEARCH_RESULT" | jq -r '.channel_url' 2>/dev/null)
+              echo "✅ کانال از طریق جستجو پیدا شد: $CHANNEL_URL"
+            fi
+          fi
+          
+          if [ -z "$CHANNEL_URL" ]; then
+            echo "❌ کانال پیدا نشد!"
+            echo ""
+            echo "راهنمایی:"
+            echo "- از نام دقیق یوتیوبر استفاده کنید"
+            echo "- مثال: MrBeast, PewDiePie, Zomro"
+            echo "- یا از آدرس کانال استفاده کنید: @username"
+            exit 1
+          fi
+          
+          echo ""
+          echo "=========================================="
+          echo "📺 ویدیوهای پیدا شده:"
+          echo "=========================================="
+          echo ""
+          
+          # Get video list with details
+          yt-dlp --flat-playlist --dump-json --skip-download \
+            --playlist-end "$MAX_COUNT" \
+            "$CHANNEL_URL/videos" 2>/dev/null > videos.json
+          
+          # If above fails, try alternative
+          if [ ! -s videos.json ] || [ "$(cat videos.json | wc -l)" -lt 2 ]; then
+            yt-dlp --flat-playlist --dump-json --skip-download \
+              --playlist-end "$MAX_COUNT" \
+              "https://www.youtube.com/channel/$(yt-dlp --print channel_id "$CHANNEL_URL" 2>/dev/null)/videos" 2>/dev/null > videos.json
+          fi
+          
+          if [ ! -s videos.json ] || [ "$(cat videos.json | wc -l)" -lt 2 ]; then
+            echo "❌ خطا در دریافت ویدیوها!"
+            exit 1
+          fi
+          
+          # Create HTML output
+          cat > index.html << 'HTMLHEAD'
+          <!DOCTYPE html>
+          <html dir="rtl" lang="fa">
+          <head>
+              <meta charset="UTF-8">
+              <meta name="viewport" content="width=device-width, initial-scale=1.0">
+              <title>ویدیوهای یوتیوب</title>
+              <style>
+                  * {
+                      margin: 0;
+                      padding: 0;
+                      box-sizing: border-box;
+                  }
+                  body {
+                      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+                      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                      min-height: 100vh;
+                      padding: 20px;
+                  }
+                  .container {
+                      max-width: 1200px;
+                      margin: 0 auto;
+                  }
+                  .header {
+                      text-align: center;
+                      color: white;
+                      margin-bottom: 40px;
+                      padding: 20px;
+                      border-radius: 20px;
+                      background: rgba(0,0,0,0.3);
+                      backdrop-filter: blur(10px);
+                  }
+                  .header h1 {
+                      font-size: 2.5em;
+                      margin-bottom: 10px;
+                  }
+                  .header p {
+                      font-size: 1.2em;
+                      opacity: 0.9;
+                  }
+                  .videos-grid {
+                      display: grid;
+                      grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+                      gap: 25px;
+                  }
+                  .video-card {
+                      background: white;
+                      border-radius: 20px;
+                      overflow: hidden;
+                      box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+                      transition: transform 0.3s ease, box-shadow 0.3s ease;
+                  }
+                  .video-card:hover {
+                      transform: translateY(-5px);
+                      box-shadow: 0 15px 40px rgba(0,0,0,0.3);
+                  }
+                  .thumbnail {
+                      position: relative;
+                      overflow: hidden;
+                      background: #000;
+                  }
+                  .thumbnail img {
+                      width: 100%;
+                      height: auto;
+                      display: block;
+                      transition: transform 0.3s ease;
+                  }
+                  .video-card:hover .thumbnail img {
+                      transform: scale(1.05);
+                  }
+                  .duration {
+                      position: absolute;
+                      bottom: 10px;
+                      right: 10px;
+                      background: rgba(0,0,0,0.8);
+                      color: white;
+                      padding: 3px 8px;
+                      border-radius: 5px;
+                      font-size: 12px;
+                      font-weight: bold;
+                  }
+                  .video-info {
+                      padding: 20px;
+                  }
+                  .video-title {
+                      font-size: 16px;
+                      font-weight: bold;
+                      margin-bottom: 10px;
+                      line-height: 1.4;
+                      color: #333;
+                      display: -webkit-box;
+                      -webkit-line-clamp: 2;
+                      -webkit-box-orient: vertical;
+                      overflow: hidden;
+                  }
+                  .video-title a {
+                      color: #333;
+                      text-decoration: none;
+                      transition: color 0.3s;
+                  }
+                  .video-title a:hover {
+                      color: #ff0000;
+                  }
+                  .video-meta {
+                      display: flex;
+                      justify-content: space-between;
+                      align-items: center;
+                      margin-top: 10px;
+                      font-size: 14px;
+                      color: #666;
+                  }
+                  .views {
+                      display: flex;
+                      align-items: center;
+                      gap: 5px;
+                  }
+                  .date {
+                      display: flex;
+                      align-items: center;
+                      gap: 5px;
+                  }
+                  .download-btn {
+                      display: inline-block;
+                      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                      color: white;
+                      padding: 8px 15px;
+                      border-radius: 10px;
+                      text-decoration: none;
+                      font-size: 14px;
+                      margin-top: 15px;
+                      transition: opacity 0.3s;
+                  }
+                  .download-btn:hover {
+                      opacity: 0.9;
+                  }
+                  .stats {
+                      text-align: center;
+                      color: white;
+                      margin-top: 40px;
+                      padding: 20px;
+                      background: rgba(0,0,0,0.3);
+                      border-radius: 20px;
+                  }
+                  .footer {
+                      text-align: center;
+                      color: white;
+                      margin-top: 40px;
+                      padding: 20px;
+                      opacity: 0.8;
+                  }
+                  @media (max-width: 768px) {
+                      .videos-grid {
+                          grid-template-columns: 1fr;
+                      }
+                      .header h1 {
+                          font-size: 1.8em;
+                      }
+                  }
+              </style>
+          </head>
+          <body>
+              <div class="container">
+                  <div class="header">
+                      <h1>🎬 ویدیوهای کانال</h1>
+                      <p id="channel-name"></p>
+                  </div>
+                  <div class="videos-grid" id="videos-grid">
+                  </div>
+                  <div class="stats" id="stats"></div>
+                  <div class="footer">
+                      <p>تهیه شده توسط ابزار دانلود خودکار | <a href="https://avasam.ir" style="color:white">AVASAM</a></p>
+                  </div>
+              </div>
+              
+              <script>
+          HTMLHEAD
+          
+          echo "const videosData = [" >> index.html
+          
+          # Process each video and create JSON
+          COUNTER=0
+          while IFS= read -r line; do
+            if [ -n "$line" ] && [ "$COUNTER" -lt "$MAX_COUNT" ]; then
+              TITLE=$(echo "$line" | jq -r '.title' 2>/dev/null | sed "s/'/\\'/g")
+              VIDEO_ID=$(echo "$line" | jq -r '.id' 2>/dev/null)
+              URL="https://www.youtube.com/watch?v=${VIDEO_ID}"
+              THUMBNAIL="https://img.youtube.com/vi/${VIDEO_ID}/maxresdefault.jpg"
+              THUMBNAIL_MQ="https://img.youtube.com/vi/${VIDEO_ID}/mqdefault.jpg"
+              DURATION=$(echo "$line" | jq -r '.duration_string' 2>/dev/null)
+              VIEWS=$(echo "$line" | jq -r '.view_count' 2>/dev/null)
+              DATE=$(echo "$line" | jq -r '.upload_date' 2>/dev/null)
+              
+              if [ -z "$VIEWS" ] || [ "$VIEWS" = "null" ]; then VIEWS="نامشخص"; fi
+              if [ -z "$DATE" ] || [ "$DATE" = "null" ]; then DATE="نامشخص"; else DATE="${DATE:0:4}/${DATE:4:2}/${DATE:6:2}"; fi
+              if [ -z "$DURATION" ] || [ "$DURATION" = "null" ]; then DURATION="نامشخص"; fi
+              
+              echo "  { \"title\": \"$TITLE\", \"url\": \"$URL\", \"thumbnail\": \"$THUMBNAIL\", \"thumbnail_mq\": \"$THUMBNAIL_MQ\", \"duration\": \"$DURATION\", \"views\": \"$VIEWS\", \"date\": \"$DATE\", \"video_id\": \"$VIDEO_ID\" }," >> index.html
+              
+              COUNTER=$((COUNTER + 1))
+            fi
+          done < <(cat videos.json | jq -c '.' 2>/dev/null)
+          
+          echo "];" >> index.html
+          
+          cat >> index.html << 'HTMLTAIL'
+              
+              const channelName = decodeURIComponent(window.location.search.split('channel=')[1] || 'کانال یوتیوب');
+              document.getElementById('channel-name').innerHTML = `📺 ${channelName}`;
+              
+              const videosGrid = document.getElementById('videos-grid');
+              const statsDiv = document.getElementById('stats');
+              
+              function formatNumber(num) {
+                  if (num === 'نامشخص') return num;
+                  if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M';
+                  if (num >= 1000) return (num / 1000).toFixed(1) + 'K';
+                  return num;
+              }
+              
+              function formatViews(views) {
+                  if (views === 'نامشخص') return '📊 بازدید: نامشخص';
+                  return `👁️ ${formatNumber(views)} بازدید`;
+              }
+              
+              videosData.forEach((video, index) => {
+                  const card = document.createElement('div');
+                  card.className = 'video-card';
+                  
+                  // Use high quality thumbnail if available, fallback to medium quality
+                  const thumbnailUrl = video.thumbnail !== 'https://img.youtube.com/vi/null/maxresdefault.jpg' ? 
+                      video.thumbnail : video.thumbnail_mq;
+                  
+                  card.innerHTML = `
+                      <div class="thumbnail">
+                          <img src="${thumbnailUrl}" alt="${video.title}" loading="lazy" onerror="this.src='${video.thumbnail_mq}'">
+                          <div class="duration">⏱️ ${video.duration}</div>
+                      </div>
+                      <div class="video-info">
+                          <div class="video-title">
+                              <a href="${video.url}" target="_blank">${video.title}</a>
+                          </div>
+                          <div class="video-meta">
+                              <span class="views">${formatViews(video.views)}</span>
+                              <span class="date">📅 ${video.date}</span>
+                          </div>
+                          <a href="${video.url}" class="download-btn" target="_blank">
+                              🎬 مشاهده در یوتیوب
+                          </a>
+                      </div>
+                  `;
+                  videosGrid.appendChild(card);
+              });
+              
+              const totalVideos = videosData.length;
+              statsDiv.innerHTML = `
+                  📊 آمار | تعداد ویدیوها: ${totalVideos} | 
+                  <a href="videos-list.txt" style="color:white" download>📥 دانلود لیست لینک‌ها</a>
+              `;
+          </script>
+          </body>
+          </html>
+          HTMLTAIL
+          
+          # Create simple text file with links
+          echo "🎬 لیست ویدیوهای کانال: $CHANNEL_NAME" > videos-list.txt
+          echo "==========================================" >> videos-list.txt
+          echo "" >> videos-list.txt
+          
+          COUNTER=1
+          while IFS= read -r line; do
+            if [ -n "$line" ] && [ "$COUNTER" -le "$MAX_COUNT" ]; then
+              TITLE=$(echo "$line" | jq -r '.title' 2>/dev/null)
+              VIDEO_ID=$(echo "$line" | jq -r '.id' 2>/dev/null)
+              URL="https://www.youtube.com/watch?v=${VIDEO_ID}"
+              echo "$COUNTER. $TITLE" >> videos-list.txt
+              echo "   لینک: $URL" >> videos-list.txt
+              echo "   تامبنیل: https://img.youtube.com/vi/${VIDEO_ID}/maxresdefault.jpg" >> videos-list.txt
+              echo "" >> videos-list.txt
+              COUNTER=$((COUNTER + 1))
+            fi
+          done < <(cat videos.json | jq -c '.' 2>/dev/null)
+          
+          # Create markdown file for GitHub
+          echo "# 🎬 ویدیوهای کانال: $CHANNEL_NAME" > VIDEOS.md
+          echo "" >> VIDEOS.md
+          echo "| # | ویدیو | لینک | تامبنیل |" >> VIDEOS.md
+          echo "|---|-------|------|----------|" >> VIDEOS.md
+          
+          COUNTER=1
+          while IFS= read -r line; do
+            if [ -n "$line" ] && [ "$COUNTER" -le "$MAX_COUNT" ]; then
+              TITLE=$(echo "$line" | jq -r '.title' 2>/dev/null)
+              VIDEO_ID=$(echo "$line" | jq -r '.id' 2>/dev/null)
+              URL="https://www.youtube.com/watch?v=${VIDEO_ID}"
+              THUMB="https://img.youtube.com/vi/${VIDEO_ID}/mqdefault.jpg"
+              echo "| $COUNTER | $TITLE | [مشاهده]($URL) | ![تامبنیل]($THUMB) |" >> VIDEOS.md
+              COUNTER=$((COUNTER + 1))
+            fi
+          done < <(cat videos.json | jq -c '.' 2>/dev/null)
+          
+          echo ""
+          echo "=========================================="
+          echo "✅ عملیات با موفقیت انجام شد!"
+          echo "=========================================="
+          echo ""
+          echo "📁 فایل‌های تولید شده:"
+          echo "   - index.html (نمایش گرافیکی ویدیوها)"
+          echo "   - videos-list.txt (لیست لینک‌ها)"
+          echo "   - VIDEOS.md (نمایش در GitHub)"
+          echo "   - videos.json (داده‌های خام)"
+          echo ""
+          
+          # Display results in console
+          echo "📺 ویدیوهای یافت شده:"
+          echo "=========================================="
+          COUNTER=1
+          while IFS= read -r line; do
+            if [ -n "$line" ] && [ "$COUNTER" -le "$MAX_COUNT" ]; then
+              TITLE=$(echo "$line" | jq -r '.title' 2>/dev/null)
+              VIDEO_ID=$(echo "$line" | jq -r '.id' 2>/dev/null)
+              echo "$COUNTER. $TITLE"
+              echo "   🔗 https://www.youtube.com/watch?v=${VIDEO_ID}"
+              echo "   🖼️ https://img.youtube.com/vi/${VIDEO_ID}/maxresdefault.jpg"
+              echo ""
+              COUNTER=$((COUNTER + 1))
+            fi
+          done < <(cat videos.json | jq -c '.' 2>/dev/null)
+          
+      - name: Deploy to GitHub Pages
+        if: success()
+        run: |
+          # Create docs folder for GitHub Pages
+          mkdir -p docs
+          cp index.html docs/
+          cp videos-list.txt docs/
+          cp VIDEOS.md docs/
+          
+          # Update README
+          cat >> README.md << 'EOF'
+          
+          ---
+          
+          ## 🎬 آخرین ویدیوهای یوتیوب
+          
+          برای مشاهده جدیدترین ویدیوها، به [صفحه نمایش](https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/) مراجعه کنید.
+          
+          EOF
+          
+      - name: Commit and Push
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          
+          git add index.html docs/ videos-list.txt VIDEOS.md videos.json README.md
+          git commit -m "🎬 Update YouTube videos for ${{ github.event.inputs.channel_name }}" || echo "No changes to commit"
+          git push || echo "Nothing to push"
+          
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: youtube-videos
+          path: |
+            index.html
+            videos-list.txt
+            VIDEOS.md
+            videos.json
+          if-no-files-found: ignore
+          
+      - name: Show Output Summary
+        run: |
+          echo "## 🎬 نتایج جستجو" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "کانال: **${{ github.event.inputs.channel_name }}**" >> $GITHUB_STEP_SUMMARY
+          echo "تعداد ویدیو: **${{ github.event.inputs.max_videos }}**" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 📁 فایل‌های تولید شده" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- [index.html](https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/) - نمایش گرافیکی" >> $GITHUB_STEP_SUMMARY
+          echo "- [videos-list.txt](videos-list.txt) - لیست لینک‌ها" >> $GITHUB_STEP_SUMMARY
+          echo "- [VIDEOS.md](VIDEOS.md) - نمایش در GitHub" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 📺 ویدیوها" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          COUNTER=1
+          while IFS= read -r line; do
+            if [ -n "$line" ] && [ "$COUNTER" -le "${{ github.event.inputs.max_videos }}" ]; then
+              TITLE=$(echo "$line" | jq -r '.title' 2>/dev/null)
+              VIDEO_ID=$(echo "$line" | jq -r '.id' 2>/dev/null)
+              echo "$COUNTER. [$TITLE](https://www.youtube.com/watch?v=${VIDEO_ID})" >> $GITHUB_STEP_SUMMARY
+              echo "   ![تامبنیل](https://img.youtube.com/vi/${VIDEO_ID}/mqdefault.jpg)" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              COUNTER=$((COUNTER + 1))
+            fi
+          done < <(cat videos.json | jq -c '.' 2>/dev/null)
