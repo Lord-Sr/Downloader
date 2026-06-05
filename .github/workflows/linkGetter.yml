@@ -1,0 +1,288 @@
+name: 🌐 مرورگر یوتیوب - دریافت لینک
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'عملیات مورد نظر'
+        required: true
+        default: 'browser'
+        type: choice
+        options:
+          - browser
+          - get_url
+      youtube_url:
+        description: 'لینک ویدیو (برای حالت get_url)'
+        required: false
+        default: ''
+        type: string
+
+jobs:
+  youtube-browser:
+    name: "🌐 مرورگر یوتیوب"
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          
+      - name: Install Playwright
+        run: |
+          npm init -y
+          npm install playwright
+          npx playwright install chromium
+          
+      - name: Run YouTube Browser
+        run: |
+          cat > youtube-browser.js << 'EOF'
+          const { chromium } = require('playwright');
+          const fs = require('fs');
+          
+          async function saveResult(data) {
+            const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+            const filename = `youtube-result-${timestamp}.txt`;
+            fs.writeFileSync(filename, data);
+            console.log(`Result saved to: ${filename}`);
+            
+            // Also append to a master log
+            fs.appendFileSync('youtube-links.log', `\n--- ${timestamp} ---\n${data}\n`);
+          }
+          
+          async function getVideoUrl(page) {
+            const currentUrl = page.url();
+            console.log('Current URL:', currentUrl);
+            
+            // Try to extract video URL
+            const videoMatch = currentUrl.match(/watch\?v=([a-zA-Z0-9_-]+)/);
+            if (videoMatch) {
+              return `https://www.youtube.com/watch?v=${videoMatch[1]}`;
+            }
+            
+            // Check for video element and get its source
+            const videoSrc = await page.evaluate(() => {
+              const video = document.querySelector('video');
+              if (video && video.src) return video.src;
+              const iframe = document.querySelector('iframe');
+              if (iframe && iframe.src.includes('youtube')) return iframe.src;
+              return null;
+            });
+            
+            if (videoSrc) return videoSrc;
+            return currentUrl;
+          }
+          
+          async function main() {
+            const action = process.env.ACTION || 'browser';
+            const targetUrl = process.env.YOUTUBE_URL || 'https://www.youtube.com';
+            
+            console.log('🚀 Starting YouTube Browser...');
+            console.log('Action:', action);
+            
+            const browser = await chromium.launch({
+              headless: action === 'get_url', // headless only for get_url mode
+              args: ['--no-sandbox', '--disable-setuid-sandbox']
+            });
+            
+            const context = await browser.newContext({
+              userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+              viewport: { width: 1280, height: 720 }
+            });
+            
+            const page = await context.newPage();
+            
+            if (action === 'get_url' && targetUrl !== 'https://www.youtube.com') {
+              // Direct mode - just get info from URL
+              console.log('📥 Getting video info from:', targetUrl);
+              await page.goto(targetUrl, { waitUntil: 'networkidle', timeout: 30000 });
+              
+              const videoUrl = await getVideoUrl(page);
+              const title = await page.title();
+              const description = await page.evaluate(() => {
+                const desc = document.querySelector('#description-inline-expander');
+                return desc ? desc.innerText : '';
+              });
+              
+              const result = `URL: ${videoUrl}\nTitle: ${title}\nDescription: ${description.substring(0, 500)}`;
+              console.log(result);
+              await saveResult(result);
+              
+              // Try to get download links
+              console.log('\n🔗 Trying to extract video info...');
+              const videoInfo = await page.evaluate(() => {
+                // Extract video details
+                const title = document.querySelector('h1 yt-formatted-string')?.innerText || document.title;
+                const channel = document.querySelector('#owner #channel-name a')?.innerText || '';
+                const views = document.querySelector('#info #count')?.innerText || '';
+                
+                return { title, channel, views };
+              });
+              
+              console.log('\n📊 Video Information:');
+              console.log(`Title: ${videoInfo.title}`);
+              console.log(`Channel: ${videoInfo.channel}`);
+              console.log(`Views: ${videoInfo.views}`);
+              
+              await saveResult(JSON.stringify(videoInfo, null, 2));
+              
+            } else {
+              // Interactive browser mode - will show live view
+              console.log('🌐 Opening YouTube browser...');
+              console.log('');
+              console.log('═══════════════════════════════════════════════════════════');
+              console.log('📺 YOUTUBE BROWSER IS RUNNING');
+              console.log('═══════════════════════════════════════════════════════════');
+              console.log('');
+              console.log('ℹ️  Since this is GitHub Actions, here are alternative methods:');
+              console.log('');
+              console.log('1️⃣ TO GET VIDEO LINKS:');
+              console.log('   Run this workflow again with action="get_url" and provide the YouTube URL');
+              console.log('');
+              console.log('2️⃣ TO DOWNLOAD YOUTUBE VIDEOS:');
+              console.log('   Use the "01 - 🎯 دانلود یوتیوب" workflow directly');
+              console.log('');
+              console.log('3️⃣ TO GET VIDEO INFO USING yt-dlp:');
+              console.log('   We can run yt-dlp to extract video information');
+              console.log('');
+              
+              await page.goto(targetUrl, { waitUntil: 'networkidle', timeout: 30000 });
+              
+              console.log('✅ Page loaded!');
+              console.log('Current page title:', await page.title());
+              console.log('');
+              
+              // Wait a bit for any potential interactive elements
+              await page.waitForTimeout(5000);
+              
+              // Save screenshot
+              const screenshot = `youtube-page-${Date.now()}.png`;
+              await page.screenshot({ path: screenshot, fullPage: false });
+              console.log(`📸 Screenshot saved: ${screenshot}`);
+              
+              // Get all video links on the page
+              const videoLinks = await page.evaluate(() => {
+                const links = [];
+                document.querySelectorAll('a[href*="/watch?v="]').forEach(link => {
+                  const href = link.href;
+                  const title = link.querySelector('#video-title')?.innerText || link.innerText;
+                  if (!links.find(l => l.url === href)) {
+                    links.push({ url: href, title: title.substring(0, 100) });
+                  }
+                });
+                return links.slice(0, 20); // First 20 videos
+              });
+              
+              if (videoLinks.length > 0) {
+                console.log('\n📋 Found videos on page:');
+                videoLinks.forEach((video, i) => {
+                  console.log(`${i+1}. ${video.title}`);
+                  console.log(`   ${video.url}`);
+                });
+                
+                let resultText = 'VIDEOS FOUND:\n\n';
+                videoLinks.forEach((video, i) => {
+                  resultText += `${i+1}. ${video.title}\n   ${video.url}\n\n`;
+                });
+                await saveResult(resultText);
+              }
+              
+              console.log('');
+              console.log('═══════════════════════════════════════════════════════════');
+              console.log('⏰ Browser will close in 60 seconds...');
+              console.log('');
+              console.log('💡 TIPS:');
+              console.log('- To get info from a specific video, use action="get_url" mode');
+              console.log('- To download videos, use the YouTube Downloader workflow');
+              console.log('═══════════════════════════════════════════════════════════');
+              
+              await page.waitForTimeout(60000);
+            }
+            
+            await browser.close();
+            console.log('\n✨ Browser closed.');
+          }
+          
+          main().catch(console.error);
+          EOF
+          
+          export ACTION="${{ github.event.inputs.action }}"
+          export YOUTUBE_URL="${{ github.event.inputs.youtube_url }}"
+          
+          node youtube-browser.js
+          
+      - name: Get Video Info with yt-dlp (Alternative)
+        if: github.event.inputs.action == 'get_url' && github.event.inputs.youtube_url != ''
+        run: |
+          echo "📥 Getting video info using yt-dlp..."
+          
+          pip3 install yt-dlp
+          
+          URL="${{ github.event.inputs.youtube_url }}"
+          
+          echo ""
+          echo "═══════════════════════════════════════════════════════════"
+          echo "📺 YOUTUBE VIDEO INFORMATION"
+          echo "═══════════════════════════════════════════════════════════"
+          echo ""
+          
+          # Get video info
+          yt-dlp --dump-json --skip-download "$URL" > video-info.json 2>/dev/null || echo "{}" > video-info.json
+          
+          if [ -s video-info.json ] && [ "$(cat video-info.json)" != "{}" ]; then
+            echo "📊 Video Details:"
+            echo ""
+            echo "Title: $(jq -r '.title' video-info.json 2>/dev/null || echo 'N/A')"
+            echo "Channel: $(jq -r '.channel' video-info.json 2>/dev/null || echo 'N/A')"
+            echo "Duration: $(jq -r '.duration_string' video-info.json 2>/dev/null || echo 'N/A')"
+            echo "Views: $(jq -r '.view_count' video-info.json 2>/dev/null || echo 'N/A')"
+            echo "Likes: $(jq -r '.like_count' video-info.json 2>/dev/null || echo 'N/A')"
+            echo ""
+            echo "📝 Description (first 500 chars):"
+            echo "$(jq -r '.description' video-info.json 2>/dev/null | head -c 500)"
+            echo ""
+            echo "🔗 Available Formats:"
+            yt-dlp -F "$URL" 2>/dev/null | head -30
+          else
+            echo "❌ Could not fetch video info"
+          fi
+          
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: youtube-results
+          path: |
+            *.txt
+            *.json
+            *.png
+            *.log
+          if-no-files-found: ignore
+          
+      - name: Show summary
+        run: |
+          echo "## 🌐 YouTube Browser Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ -f "youtube-links.log" ]; then
+            echo "### 📋 Extracted Links" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            cat youtube-links.log >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          if [ -f "video-info.json" ] && [ -s "video-info.json" ]; then
+            echo "### 📊 Video Info" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "| Field | Value |" >> $GITHUB_STEP_SUMMARY
+            echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
+            echo "| Title | $(jq -r '.title' video-info.json 2>/dev/null || echo 'N/A') |" >> $GITHUB_STEP_SUMMARY
+            echo "| Channel | $(jq -r '.channel' video-info.json 2>/dev/null || echo 'N/A') |" >> $GITHUB_STEP_SUMMARY
+            echo "| Duration | $(jq -r '.duration_string' video-info.json 2>/dev/null || echo 'N/A') |" >> $GITHUB_STEP_SUMMARY
+            echo "| Views | $(jq -r '.view_count' video-info.json 2>/dev/null || echo 'N/A') |" >> $GITHUB_STEP_SUMMARY
+          fi
